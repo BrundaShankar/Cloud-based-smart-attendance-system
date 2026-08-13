@@ -1,16 +1,17 @@
 import boto3
 import os
-import csv
 import io
 from datetime import datetime
 from PIL import Image
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, Alignment
 from botocore.exceptions import NoCredentialsError, ClientError
 
 # ============================================================
 # AWS CONFIGURATION
 # ============================================================
 
-AWS_REGION = "us-east-1"   # Change to your actual AWS region
+AWS_REGION = "us-east-1"   # Change if your AWS resources use another region
 
 S3_BUCKET = "student-attendance-photos"
 COLLECTION_ID = "student-attendance-collection"
@@ -19,81 +20,120 @@ COLLECTION_ID = "student-attendance-collection"
 # PROJECT PATHS
 # ============================================================
 
-# Get the folder where attendance_system.py is located
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 STUDENTS_FOLDER = os.path.join(BASE_DIR, "students")
 CHECK_FOLDER = os.path.join(BASE_DIR, "check_photos")
-ATTENDANCE_FILE = os.path.join(BASE_DIR, "attendance.csv")
+
+ATTENDANCE_FILE = os.path.join(
+    BASE_DIR,
+    "attendance.xlsx"
+)
 
 # ============================================================
 # SUPPORTED IMAGE FORMATS
 # ============================================================
 
-IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png")
+IMAGE_EXTENSIONS = (
+    ".jpg",
+    ".jpeg",
+    ".png"
+)
 
 # ============================================================
 # AWS CLIENTS
 # ============================================================
 
-try:
-    s3 = boto3.client(
-        "s3",
-        region_name=AWS_REGION
-    )
+s3 = boto3.client(
+    "s3",
+    region_name=AWS_REGION
+)
 
-    rekognition = boto3.client(
-        "rekognition",
-        region_name=AWS_REGION
-    )
-
-except Exception as e:
-    print(f"❌ Error creating AWS clients: {e}")
-    raise
+rekognition = boto3.client(
+    "rekognition",
+    region_name=AWS_REGION
+)
 
 
 # ============================================================
-# CHECK LOCAL FOLDERS
+# CHECK REQUIRED FOLDERS
 # ============================================================
 
 def check_required_folders():
 
     if not os.path.exists(STUDENTS_FOLDER):
         raise FileNotFoundError(
-            f"\n❌ Students folder not found:\n{STUDENTS_FOLDER}\n"
-            "Create the 'students' folder and add student images."
+            f"\nStudents folder not found:\n"
+            f"{STUDENTS_FOLDER}\n\n"
+            f"Create a 'students' folder and add "
+            f"individual student images."
         )
 
     if not os.path.exists(CHECK_FOLDER):
         raise FileNotFoundError(
-            f"\n❌ Check photos folder not found:\n{CHECK_FOLDER}\n"
-            "Create the 'check_photos' folder and add classroom images."
+            f"\nCheck photos folder not found:\n"
+            f"{CHECK_FOLDER}\n\n"
+            f"Create a 'check_photos' folder and add "
+            f"classroom/group images."
         )
 
-    print(f"📂 Project folder: {BASE_DIR}")
-    print(f"✅ Students folder found")
-    print(f"✅ Check photos folder found")
+    print("Students folder found.")
+    print("Check photos folder found.")
+
+
+# ============================================================
+# GET STUDENT NAMES FROM INDIVIDUAL IMAGES
+# ============================================================
+
+def get_student_names():
+
+    student_names = []
+
+    for file_name in os.listdir(STUDENTS_FOLDER):
+
+        if not file_name.lower().endswith(
+            IMAGE_EXTENSIONS
+        ):
+            continue
+
+        # Remove extension
+        name = os.path.splitext(file_name)[0]
+
+        student_names.append(name)
+
+    # Remove duplicates and sort alphabetically
+    student_names = sorted(
+        set(student_names),
+        key=str.lower
+    )
+
+    return student_names
 
 
 # ============================================================
 # UPLOAD FOLDER TO S3
 # ============================================================
 
-def upload_folder_to_s3(local_folder, s3_prefix):
+def upload_folder_to_s3(
+    local_folder,
+    s3_prefix
+):
 
     uploaded_count = 0
 
     for file_name in os.listdir(local_folder):
 
-        local_path = os.path.join(local_folder, file_name)
+        local_path = os.path.join(
+            local_folder,
+            file_name
+        )
 
-        # Skip folders
         if not os.path.isfile(local_path):
             continue
 
-        # Skip non-image files
-        if not file_name.lower().endswith(IMAGE_EXTENSIONS):
-            print(f"ℹ Skipping non-image file: {file_name}")
+        if not file_name.lower().endswith(
+            IMAGE_EXTENSIONS
+        ):
             continue
 
         s3_key = f"{s3_prefix}/{file_name}"
@@ -107,31 +147,16 @@ def upload_folder_to_s3(local_folder, s3_prefix):
             )
 
             print(
-                f"✅ Uploaded {file_name} "
-                f"→ s3://{S3_BUCKET}/{s3_key}"
+                f"Uploaded: {file_name}"
             )
 
             uploaded_count += 1
 
-        except NoCredentialsError:
-
-            print(
-                "\n❌ AWS credentials not found.\n"
-                "Run 'aws configure' and configure your AWS credentials."
-            )
-
-            raise
-
-        except ClientError as e:
-
-            print(
-                f"⚠ Upload failed for {file_name}: {e}"
-            )
-
         except Exception as e:
 
             print(
-                f"⚠ Unexpected upload error for {file_name}: {e}"
+                f"Error uploading "
+                f"{file_name}: {e}"
             )
 
     return uploaded_count
@@ -150,7 +175,7 @@ def ensure_collection():
         )
 
         print(
-            f"ℹ Rekognition collection already exists: "
+            f"Collection already exists: "
             f"{COLLECTION_ID}"
         )
 
@@ -161,28 +186,31 @@ def ensure_collection():
         )
 
         print(
-            f"✅ Created Rekognition collection: "
+            f"Created collection: "
             f"{COLLECTION_ID}"
         )
 
 
 # ============================================================
-# CLEAR EXISTING FACES
+# CLEAR OLD FACES
 # ============================================================
 
-def clear_collection(collection_id):
+def clear_collection():
 
-    print("\n🧹 Clearing old faces from Rekognition collection...")
+    print("\nClearing old Rekognition faces...")
+
+    response = rekognition.list_faces(
+        CollectionId=COLLECTION_ID
+    )
 
     total_deleted = 0
 
-    response = rekognition.list_faces(
-        CollectionId=collection_id
-    )
-
     while True:
 
-        faces = response.get("Faces", [])
+        faces = response.get(
+            "Faces",
+            []
+        )
 
         if faces:
 
@@ -192,51 +220,56 @@ def clear_collection(collection_id):
             ]
 
             rekognition.delete_faces(
-                CollectionId=collection_id,
+                CollectionId=COLLECTION_ID,
                 FaceIds=face_ids
             )
 
             total_deleted += len(face_ids)
 
             print(
-                f"🧹 Deleted {len(face_ids)} faces"
+                f"Deleted {len(face_ids)} faces."
             )
 
-        next_token = response.get("NextToken")
+        next_token = response.get(
+            "NextToken"
+        )
 
         if not next_token:
             break
 
         response = rekognition.list_faces(
-            CollectionId=collection_id,
+            CollectionId=COLLECTION_ID,
             NextToken=next_token
         )
 
-    if total_deleted == 0:
-        print("ℹ Collection was already empty.")
-
-    else:
-        print(
-            f"✅ Total faces deleted: {total_deleted}"
-        )
+    print(
+        f"Total old faces deleted: "
+        f"{total_deleted}"
+    )
 
 
 # ============================================================
-# INDEX STUDENT FACES
+# INDEX STUDENT IMAGES
 # ============================================================
 
 def index_student_faces():
 
-    print("\n🧠 Indexing student faces...")
+    print("\nIndexing student faces...")
 
     indexed_count = 0
 
-    for student_image in os.listdir(STUDENTS_FOLDER):
+    for student_image in os.listdir(
+        STUDENTS_FOLDER
+    ):
 
-        if not student_image.lower().endswith(IMAGE_EXTENSIONS):
+        if not student_image.lower().endswith(
+            IMAGE_EXTENSIONS
+        ):
             continue
 
-        s3_key = f"students/{student_image}"
+        s3_key = (
+            f"students/{student_image}"
+        )
 
         student_name = os.path.splitext(
             student_image
@@ -257,20 +290,17 @@ def index_student_faces():
 
                 ExternalImageId=student_name,
 
-                DetectionAttributes=["DEFAULT"],
+                DetectionAttributes=[
+                    "DEFAULT"
+                ],
 
                 MaxFaces=1
             )
 
-            indexed_faces = response.get(
-                "FaceRecords",
-                []
-            )
-
-            if indexed_faces:
+            if response.get("FaceRecords"):
 
                 print(
-                    f"✅ Indexed: {student_image}"
+                    f"Indexed: {student_name}"
                 )
 
                 indexed_count += 1
@@ -278,69 +308,244 @@ def index_student_faces():
             else:
 
                 print(
-                    f"⚠ No face indexed in: "
+                    f"No face found in: "
                     f"{student_image}"
                 )
 
         except Exception as e:
 
             print(
-                f"⚠ Error indexing "
+                f"Error indexing "
                 f"{student_image}: {e}"
             )
 
     print(
-        f"\n📊 Total student images indexed: "
+        f"\nTotal students indexed: "
         f"{indexed_count}"
     )
 
 
 # ============================================================
-# CREATE ATTENDANCE FILE
+# CREATE / UPDATE EXCEL ATTENDANCE FILE
 # ============================================================
 
-def create_attendance_file():
+def prepare_attendance_excel(
+    student_names,
+    timestamp
+):
 
-    if not os.path.exists(ATTENDANCE_FILE):
+    if os.path.exists(
+        ATTENDANCE_FILE
+    ):
 
-        with open(
-            ATTENDANCE_FILE,
-            "w",
-            newline="",
-            encoding="utf-8"
-        ) as file:
+        workbook = load_workbook(
+            ATTENDANCE_FILE
+        )
 
-            writer = csv.writer(file)
+        worksheet = workbook.active
 
-            writer.writerow(
-                ["Name", "Timestamp"]
-            )
-
-        print("✅ Created attendance.csv")
+        print(
+            "Existing attendance.xlsx found."
+        )
 
     else:
 
-        print("ℹ attendance.csv already exists")
+        workbook = Workbook()
+
+        worksheet = workbook.active
+
+        worksheet.title = "Attendance"
+
+        # First column title
+        worksheet.cell(
+            row=1,
+            column=1,
+            value="Student Name"
+        )
+
+        worksheet.cell(
+            row=1,
+            column=1
+        ).font = Font(
+            bold=True
+        )
+
+        print(
+            "Created new attendance.xlsx."
+        )
+
+    # --------------------------------------------------------
+    # Find existing student names
+    # --------------------------------------------------------
+
+    existing_names = {}
+
+    for row in range(
+        2,
+        worksheet.max_row + 1
+    ):
+
+        value = worksheet.cell(
+            row=row,
+            column=1
+        ).value
+
+        if value:
+
+            existing_names[
+                str(value).lower()
+            ] = row
+
+    # --------------------------------------------------------
+    # Add any new students
+    # --------------------------------------------------------
+
+    for name in student_names:
+
+        if name.lower() not in existing_names:
+
+            new_row = (
+                worksheet.max_row + 1
+            )
+
+            worksheet.cell(
+                row=new_row,
+                column=1,
+                value=name
+            )
+
+            existing_names[
+                name.lower()
+            ] = new_row
+
+    # --------------------------------------------------------
+    # Create new timestamp column
+    # --------------------------------------------------------
+
+    new_column = (
+        worksheet.max_column + 1
+    )
+
+    worksheet.cell(
+        row=1,
+        column=new_column,
+        value=timestamp
+    )
+
+    worksheet.cell(
+        row=1,
+        column=new_column
+    ).font = Font(
+        bold=True
+    )
+
+    worksheet.cell(
+        row=1,
+        column=new_column
+    ).alignment = Alignment(
+        horizontal="center"
+    )
+
+    # --------------------------------------------------------
+    # Initially mark everyone ABSENT
+    # --------------------------------------------------------
+
+    for name in student_names:
+
+        row = existing_names[
+            name.lower()
+        ]
+
+        worksheet.cell(
+            row=row,
+            column=new_column,
+            value="Absent"
+        )
+
+        worksheet.cell(
+            row=row,
+            column=new_column
+        ).alignment = Alignment(
+            horizontal="center"
+        )
+
+    workbook.save(
+        ATTENDANCE_FILE
+    )
+
+    return new_column
 
 
 # ============================================================
-# CROP FACE FROM S3 IMAGE
+# MARK STUDENT PRESENT IN EXCEL
 # ============================================================
 
-def crop_face_from_s3(bucket, key, box):
+def mark_student_present(
+    student_name,
+    attendance_column
+):
 
-    s3_object = s3.get_object(
+    workbook = load_workbook(
+        ATTENDANCE_FILE
+    )
+
+    worksheet = workbook.active
+
+    for row in range(
+        2,
+        worksheet.max_row + 1
+    ):
+
+        name = worksheet.cell(
+            row=row,
+            column=1
+        ).value
+
+        if (
+            name
+            and str(name).lower()
+            == student_name.lower()
+        ):
+
+            worksheet.cell(
+                row=row,
+                column=attendance_column,
+                value="Present"
+            )
+
+            break
+
+    workbook.save(
+        ATTENDANCE_FILE
+    )
+
+
+# ============================================================
+# CROP FACE FROM S3
+# ============================================================
+
+def crop_face_from_s3(
+    bucket,
+    key,
+    box
+):
+
+    response = s3.get_object(
         Bucket=bucket,
         Key=key
     )
 
-    image_data = s3_object["Body"].read()
+    image_data = response[
+        "Body"
+    ].read()
 
     image = Image.open(
         io.BytesIO(image_data)
     )
 
-    image = image.convert("RGB")
+    image = image.convert(
+        "RGB"
+    )
 
     width, height = image.size
 
@@ -353,21 +558,32 @@ def crop_face_from_s3(bucket, key, box):
     )
 
     right = int(
-        (box["Left"] + box["Width"]) * width
+        (
+            box["Left"]
+            + box["Width"]
+        ) * width
     )
 
     bottom = int(
-        (box["Top"] + box["Height"]) * height
+        (
+            box["Top"]
+            + box["Height"]
+        ) * height
     )
 
-    # Make sure coordinates remain inside image
+    # Keep coordinates within image
     left = max(0, left)
     top = max(0, top)
     right = min(width, right)
     bottom = min(height, bottom)
 
     cropped_image = image.crop(
-        (left, top, right, bottom)
+        (
+            left,
+            top,
+            right,
+            bottom
+        )
     )
 
     image_bytes = io.BytesIO()
@@ -383,36 +599,45 @@ def crop_face_from_s3(bucket, key, box):
 
 
 # ============================================================
-# PROCESS CLASSROOM / CHECK IMAGES
+# PROCESS CLASSROOM IMAGES
 # ============================================================
 
-def process_check_images():
+def process_check_images(
+    attendance_column
+):
 
-    print("\n🔍 Processing classroom images...")
+    print(
+        "\nProcessing classroom images..."
+    )
 
-    # Prevent duplicate attendance during this execution
+    # Prevent duplicate marking
+    # within this attendance session
     marked_names = set()
 
-    for image_name in os.listdir(CHECK_FOLDER):
+    for image_name in os.listdir(
+        CHECK_FOLDER
+    ):
 
         if not image_name.lower().endswith(
             IMAGE_EXTENSIONS
         ):
             continue
 
-        s3_key = f"check_photos/{image_name}"
+        s3_key = (
+            f"check_photos/{image_name}"
+        )
 
         print(
-            f"\n📸 Checking image: {image_name}"
+            f"\nChecking: {image_name}"
         )
 
         try:
 
             # ------------------------------------------------
-            # Detect all faces
+            # Detect faces
             # ------------------------------------------------
 
-            detect_response = rekognition.detect_faces(
+            response = rekognition.detect_faces(
 
                 Image={
                     "S3Object": {
@@ -424,7 +649,7 @@ def process_check_images():
                 Attributes=["DEFAULT"]
             )
 
-            faces = detect_response.get(
+            faces = response.get(
                 "FaceDetails",
                 []
             )
@@ -432,43 +657,47 @@ def process_check_images():
             if not faces:
 
                 print(
-                    "❌ No faces detected."
+                    "No faces detected."
                 )
 
                 continue
 
             print(
-                f"👤 Faces detected: {len(faces)}"
+                f"Faces detected: "
+                f"{len(faces)}"
             )
 
             # ------------------------------------------------
-            # Process every detected face
+            # Process each face
             # ------------------------------------------------
 
-            for index, face_detail in enumerate(faces):
+            for index, face in enumerate(
+                faces
+            ):
 
-                print(
-                    f"\n🔎 Processing face "
-                    f"{index + 1}/{len(faces)}"
-                )
+                box = face[
+                    "BoundingBox"
+                ]
 
-                box = face_detail["BoundingBox"]
-
-                # Crop face
-                face_bytes = crop_face_from_s3(
-                    S3_BUCKET,
-                    s3_key,
-                    box
+                face_bytes = (
+                    crop_face_from_s3(
+                        S3_BUCKET,
+                        s3_key,
+                        box
+                    )
                 )
 
                 # ------------------------------------------------
-                # Search face in Rekognition collection
+                # Search face
                 # ------------------------------------------------
 
                 search_response = (
-                    rekognition.search_faces_by_image(
+                    rekognition
+                    .search_faces_by_image(
 
-                        CollectionId=COLLECTION_ID,
+                        CollectionId=(
+                            COLLECTION_ID
+                        ),
 
                         Image={
                             "Bytes": face_bytes
@@ -480,97 +709,73 @@ def process_check_images():
                     )
                 )
 
-                matches = search_response.get(
-                    "FaceMatches",
-                    []
+                matches = (
+                    search_response
+                    .get(
+                        "FaceMatches",
+                        []
+                    )
                 )
-
-                # ------------------------------------------------
-                # Face recognized
-                # ------------------------------------------------
 
                 if matches:
 
                     match = matches[0]
 
-                    name = (
+                    student_name = (
                         match["Face"]
                         ["ExternalImageId"]
                     )
 
-                    confidence = match[
-                        "Similarity"
-                    ]
+                    confidence = (
+                        match["Similarity"]
+                    )
 
                     # --------------------------------------------
-                    # Mark attendance only once
+                    # Mark only once
                     # --------------------------------------------
 
-                    if name not in marked_names:
+                    if (
+                        student_name
+                        not in marked_names
+                    ):
 
-                        marked_names.add(name)
-
-                        timestamp = (
-                            datetime.now()
-                            .strftime(
-                                "%Y-%m-%d %H:%M:%S"
-                            )
+                        marked_names.add(
+                            student_name
                         )
 
-                        with open(
-                            ATTENDANCE_FILE,
-                            "a",
-                            newline="",
-                            encoding="utf-8"
-                        ) as file:
-
-                            writer = csv.writer(file)
-
-                            writer.writerow(
-                                [
-                                    name,
-                                    timestamp
-                                ]
-                            )
-
-                        print(
-                            f"✅ {name} marked present"
+                        mark_student_present(
+                            student_name,
+                            attendance_column
                         )
 
                         print(
-                            f"   Confidence: "
+                            f"Present: "
+                            f"{student_name}"
+                        )
+
+                        print(
+                            f"Confidence: "
                             f"{confidence:.2f}%"
                         )
 
                     else:
 
                         print(
-                            f"ℹ {name} "
-                            f"already marked present"
+                            f"{student_name} "
+                            f"already marked present."
                         )
-
-                # ------------------------------------------------
-                # Face not recognized
-                # ------------------------------------------------
 
                 else:
 
                     print(
-                        f"❌ Face {index + 1} "
-                        f"not recognized"
+                        f"Face {index + 1} "
+                        f"not recognized."
                     )
-
-        except ClientError as e:
-
-            print(
-                f"⚠ AWS error while processing "
-                f"{image_name}: {e}"
-            )
 
         except Exception as e:
 
             print(
-                f"⚠ Error processing "
+                f"Error processing "
                 f"{image_name}: {e}"
             )
 
@@ -584,95 +789,127 @@ def process_check_images():
 def main():
 
     print("=" * 60)
-    print("       AWS FACE RECOGNITION ATTENDANCE SYSTEM")
+
+    print(
+        "     AWS FACE RECOGNITION ATTENDANCE SYSTEM"
+    )
+
     print("=" * 60)
 
     print(
-        f"\n🌎 AWS Region: {AWS_REGION}"
+        f"\nAWS Region: {AWS_REGION}"
     )
 
     print(
-        f"☁ S3 Bucket: {S3_BUCKET}"
+        f"S3 Bucket: {S3_BUCKET}"
     )
 
     print(
-        f"🧠 Rekognition Collection: "
-        f"{COLLECTION_ID}"
+        f"Collection: {COLLECTION_ID}"
     )
 
     # --------------------------------------------------------
-    # Check local folders
+    # Check folders
     # --------------------------------------------------------
 
     check_required_folders()
+
+    # --------------------------------------------------------
+    # Get student names
+    # --------------------------------------------------------
+
+    student_names = get_student_names()
+
+    if not student_names:
+
+        raise ValueError(
+            "No student images found in "
+            "the students folder."
+        )
+
+    print(
+        f"\nStudents found: "
+        f"{len(student_names)}"
+    )
+
+    for name in student_names:
+
+        print(
+            f"  - {name}"
+        )
 
     # --------------------------------------------------------
     # Upload student images
     # --------------------------------------------------------
 
     print(
-        "\n📤 Uploading student images to S3..."
+        "\nUploading student images..."
     )
 
-    student_count = upload_folder_to_s3(
+    upload_folder_to_s3(
         STUDENTS_FOLDER,
         "students"
     )
 
-    print(
-        f"📊 Student images uploaded: "
-        f"{student_count}"
-    )
-
     # --------------------------------------------------------
-    # Upload classroom/check images
+    # Upload classroom images
     # --------------------------------------------------------
 
     print(
-        "\n📤 Uploading classroom images to S3..."
+        "\nUploading classroom images..."
     )
 
-    check_count = upload_folder_to_s3(
+    upload_folder_to_s3(
         CHECK_FOLDER,
         "check_photos"
     )
 
-    print(
-        f"📊 Classroom images uploaded: "
-        f"{check_count}"
-    )
-
     # --------------------------------------------------------
-    # Create Rekognition collection
+    # Ensure collection exists
     # --------------------------------------------------------
 
     ensure_collection()
 
     # --------------------------------------------------------
-    # Clear previous faces
+    # Clear old collection
     # --------------------------------------------------------
 
-    clear_collection(
-        COLLECTION_ID
-    )
+    clear_collection()
 
     # --------------------------------------------------------
-    # Index students
+    # Index student faces
     # --------------------------------------------------------
 
     index_student_faces()
 
     # --------------------------------------------------------
-    # Create attendance CSV
+    # Create timestamp
     # --------------------------------------------------------
 
-    create_attendance_file()
+    timestamp = datetime.now().strftime(
+        "%d-%m-%Y %H:%M:%S"
+    )
+
+    # --------------------------------------------------------
+    # Create new attendance column
+    # --------------------------------------------------------
+
+    attendance_column = (
+        prepare_attendance_excel(
+            student_names,
+            timestamp
+        )
+    )
 
     # --------------------------------------------------------
     # Process classroom images
     # --------------------------------------------------------
 
-    marked_students = process_check_images()
+    marked_students = (
+        process_check_images(
+            attendance_column
+        )
+    )
 
     # --------------------------------------------------------
     # Final result
@@ -681,27 +918,36 @@ def main():
     print("\n" + "=" * 60)
 
     print(
-        "🎯 ATTENDANCE MARKING COMPLETE!"
+        "ATTENDANCE MARKING COMPLETE!"
     )
 
     print(
-        f"👥 Students marked present: "
+        f"Present: "
         f"{len(marked_students)}"
     )
 
     print(
-        f"📄 Attendance file: "
-        f"{ATTENDANCE_FILE}"
+        f"Absent: "
+        f"{len(student_names) - len(marked_students)}"
+    )
+
+    print(
+        f"\nExcel file created/updated:"
+    )
+
+    print(
+        ATTENDANCE_FILE
     )
 
     print("=" * 60)
 
 
 # ============================================================
-# START PROGRAM
+# START
 # ============================================================
 
 if __name__ == "__main__":
+
     try:
 
         main()
@@ -709,21 +955,17 @@ if __name__ == "__main__":
     except NoCredentialsError:
 
         print(
-            "\n❌ AWS credentials were not found."
+            "\nAWS credentials not found."
         )
 
         print(
-            "\nConfigure AWS credentials using:"
-        )
-
-        print(
-            "aws configure"
+            "Run 'aws configure' first."
         )
 
     except Exception as e:
 
         print(
-            f"\n❌ Program stopped because of an error:"
+            f"\nProgram stopped:"
         )
 
         print(e)
